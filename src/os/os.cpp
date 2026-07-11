@@ -203,6 +203,28 @@ void OS::requestWifiAutoConnect()
     WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
+// Read the battery every 2s (not every frame — the ADC is noisy and jitters
+// a few percent between reads), smooth with an EMA, and only move the shown
+// value on a >=2% change so the status bar stays rock steady.
+void OS::pollBattery()
+{
+    uint32_t now = millis();
+    if (_lastBattPoll != 0 && now - _lastBattPoll < 2000) return;
+    _lastBattPoll = now;
+
+    int raw = M5Cardputer.Power.getBatteryLevel();
+    if (raw < 0) return;  // unknown
+    if (raw > 100) raw = 100;
+
+    if (_battEma < 0) _battEma = raw;
+    _battEma = _battEma * 0.7f + raw * 0.3f;
+    int lvl  = (int)(_battEma + 0.5f);
+
+    if (_battShown < 0 || abs(lvl - _battShown) >= 2 || lvl >= 100 || lvl <= 5) {
+        _battShown = lvl;
+    }
+}
+
 void OS::pollTimeSync()
 {
     if (_timeSynced) return;
@@ -323,10 +345,9 @@ void OS::drawStatusBar()
 
     int rx = SCREEN_W - 4;
 
-    // battery
-    int lvl = M5Cardputer.Power.getBatteryLevel();
+    // battery (slow-polled + smoothed, see pollBattery)
+    int lvl = _battShown;
     if (lvl >= 0) {
-        if (lvl > 100) lvl = 100;
         char buf[12];
         snprintf(buf, sizeof(buf), "%d%%", lvl);
         _canvas.setTextDatum(textdatum_t::middle_right);
@@ -409,6 +430,7 @@ void OS::tick()
     if (a) a->onTick();
     applyPendingStackOps();
     pollTimeSync();
+    pollBattery();
     drainNotifications();
 
     a = top();

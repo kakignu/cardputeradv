@@ -99,6 +99,7 @@ private:
     void applyPendingStackOps();
     void mountFlash();
     void pollTimeSync();
+    void pollBattery();
     void drainNotifications();
     void drawToasts();
 
@@ -112,6 +113,12 @@ private:
     bool _timeSynced = false, _ntpStarted = false;
     uint32_t _bootMillis = 0, _lastFrameMs = 0, _lastTimePoll = 0;
     float _fps = 0, _uiLoad = 0;
+
+    // battery: the raw ADC reading jitters by a few percent, so the status
+    // bar shows a slow-polled, smoothed, hysteresis-filtered value
+    uint32_t _lastBattPoll = 0;
+    float _battEma  = -1;
+    int _battShown  = -1;
 
     struct Toast {
         String text;
