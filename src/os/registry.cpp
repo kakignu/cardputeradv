@@ -4,7 +4,9 @@
 #include "../apps/editor.h"
 #include "../apps/files.h"
 #include "../apps/imu_app.h"
+#include "../apps/music.h"
 #include "../apps/paint.h"
+#include "../apps/tasks_app.h"
 #include "../apps/settings_app.h"
 #include "../apps/snake.h"
 #include "../apps/sysinfo.h"
@@ -99,6 +101,23 @@ static void iconSettings(M5Canvas& c, int x, int y, const Theme& t)
     c.fillCircle(cx, cy, 3, t.bg);
 }
 
+static void iconMusic(M5Canvas& c, int x, int y, const Theme& t)
+{
+    c.fillEllipse(x + 6, y + 17, 4, 3, t.accent);
+    c.fillRect(x + 9, y + 4, 2, 13, t.accent);
+    c.fillEllipse(x + 16, y + 15, 4, 3, t.accent);
+    c.fillRect(x + 19, y + 2, 2, 13, t.accent);
+    c.fillRect(x + 9, y + 2, 12, 3, t.accent);
+}
+
+static void iconTasks(M5Canvas& c, int x, int y, const Theme& t)
+{
+    c.drawRoundRect(x + 1, y + 2, 22, 20, 3, t.dim);
+    c.fillRect(x + 4, y + 6, 10, 3, t.ok);
+    c.fillRect(x + 4, y + 11, 15, 3, t.accent2);
+    c.fillRect(x + 4, y + 16, 7, 3, t.accent);
+}
+
 static void iconInfo(M5Canvas& c, int x, int y, const Theme& t)
 {
     c.fillCircle(x + 12, y + 12, 10, t.accent2);
@@ -123,6 +142,8 @@ const std::vector<AppInfo>& appRegistry()
         {"edit", "Edit", iconEditor, createEditorDefault},
         {"term", "Term", iconTerminal, createTerminalApp},
         {"wifi", "WiFi", iconWifi, createWifiApp},
+        {"music", "Music", iconMusic, createMusicApp},
+        {"tasks", "Tasks", iconTasks, createTasksApp},
         {"clock", "Clock", iconClock, createClockApp},
         {"level", "Level", iconLevel, createImuApp},
         {"paint", "Paint", iconPaint, createPaintApp},

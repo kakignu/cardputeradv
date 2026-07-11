@@ -6,6 +6,7 @@
 #include <time.h>
 #include <vector>
 
+#include "../os/proc.h"
 #include "../os/registry.h"
 #include "../os/storage.h"
 #include "../os/widgets.h"
@@ -22,8 +23,9 @@ constexpr char MK_OK     = '\x03';
 
 const char* CMDS[] = {"help",  "about", "clear",   "uname",  "free",       "uptime", "battery",
                       "ls",    "cd",    "pwd",     "cat",    "rm",         "mkdir",  "touch",
-                      "write", "scan",  "wifi",    "connect", "disconnect", "time",   "apps",
-                      "open",  "bright", "vol",    "theme",  "sd",         "reboot", "exit"};
+                      "write", "copy",  "scan",    "wifi",   "connect",    "disconnect",
+                      "time",  "apps",  "open",    "bright", "vol",        "theme",  "sd",
+                      "ps",    "kill",  "worker",  "reboot", "exit"};
 
 class TerminalApp : public App {
 public:
@@ -270,6 +272,8 @@ private:
 
         if (cmd == "help") {
             print("files : ls cd pwd cat rm mkdir touch write");
+            print("        copy <src> <dst> [&]");
+            print("jobs  : ps  kill [-9] <pid>  worker <sec> &");
             print("net   : scan wifi connect disconnect");
             print("sys   : free uptime battery time bright vol");
             print("        theme sd uname about reboot");
@@ -375,6 +379,80 @@ private:
                 else
                     err("write failed");
             }
+        } else if (cmd == "copy") {
+            bool bg = !tok.empty() && tok.back() == "&";
+            if (tok.size() < 3 + (bg ? 1 : 0)) {
+                err("usage: copy <src> <dst> [&]");
+            } else {
+                String src = absPath(tok[1]);
+                String dst = absPath(tok[2]);
+                if (!vfs::exists(src) || vfs::isDir(src)) {
+                    err("copy: no such file: " + src);
+                } else if (bg) {
+                    int pid = proc::spawn("copy", [src, dst](proc::JobCtx& ctx) {
+                        bool ok = vfs::copyFile(src, dst, [&ctx](int pct) {
+                            ctx.progress = pct;
+                            return !ctx.cancelled();
+                        });
+                        ctx.post(ok ? "copy done: " + dst : "copy FAILED: " + dst);
+                    });
+                    if (pid < 0)
+                        err("job table full");
+                    else
+                        ok("[" + String(pid) + "] copying in background (see 'ps')");
+                } else {
+                    print("copying... (blocks the UI - try '&' next time)");
+                    if (vfs::copyFile(src, dst))
+                        ok("copied " + ui::humanSize(vfs::fileSize(dst)));
+                    else
+                        err("copy failed");
+                }
+            }
+        } else if (cmd == "ps") {
+            proc::Info jobs[proc::MAX_JOBS];
+            int n = proc::list(jobs, proc::MAX_JOBS);
+            if (n == 0) {
+                print("no background jobs");
+            } else {
+                print(String(MK_ACCENT) + "PID NAME         PROG STACK  TIME");
+                for (int i = 0; i < n; i++) {
+                    char ln[64];
+                    if (jobs[i].progress >= 0)
+                        snprintf(ln, sizeof(ln), "%3d %-12s %3d%% %5uB %3us", jobs[i].pid,
+                                 jobs[i].name, jobs[i].progress, (unsigned)jobs[i].stackFree,
+                                 (unsigned)(jobs[i].runMs / 1000));
+                    else
+                        snprintf(ln, sizeof(ln), "%3d %-12s   -- %5uB %3us", jobs[i].pid,
+                                 jobs[i].name, (unsigned)jobs[i].stackFree,
+                                 (unsigned)(jobs[i].runMs / 1000));
+                    print(ln);
+                }
+            }
+        } else if (cmd == "kill") {
+            bool force = (a1 == "-9");
+            String pidStr = force ? (tok.size() > 2 ? tok[2] : "") : a1;
+            int pid = pidStr.toInt();
+            if (pid <= 0) {
+                err("usage: kill [-9] <pid>");
+            } else if (force ? proc::forceKill(pid) : proc::requestCancel(pid)) {
+                ok(force ? "force-killed (careful: may leak locks)" : "cancel requested");
+            } else {
+                err("no such pid: " + pidStr);
+            }
+        } else if (cmd == "worker") {
+            int sec = a1.toInt();
+            if (sec <= 0) sec = 15;
+            int pid = proc::spawn("worker", [sec](proc::JobCtx& ctx) {
+                for (int i = 0; i < sec * 10 && !ctx.cancelled(); i++) {
+                    ctx.progress = i * 100 / (sec * 10);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+                ctx.post(ctx.cancelled() ? "worker cancelled" : "worker finished");
+            });
+            if (pid < 0)
+                err("job table full");
+            else
+                ok("[" + String(pid) + "] worker started (" + String(sec) + "s, see 'ps')");
         } else if (cmd == "scan") {
             WiFi.mode(WIFI_STA);
             WiFi.scanNetworks(true);

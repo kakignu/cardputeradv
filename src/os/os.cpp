@@ -5,9 +5,18 @@
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <time.h>
 
 #include "../apps/launcher.h"
+#include "proc.h"
+#include "storage.h"
+
+// one toast message travelling from a job thread to the UI thread
+struct NotifyMsg {
+    char text[56];
+};
 
 // SD card pins on Cardputer ADV (dedicated SPI bus, separate from the LCD)
 static constexpr int PIN_SD_SCK  = 40;
@@ -35,8 +44,12 @@ void OS::begin()
     loadSettings();
     applySettings();
 
+    vfs::initLocks();
     mountFlash();
     remountSD();
+
+    proc::begin();
+    _notifyQueue = xQueueCreate(8, sizeof(NotifyMsg));
 
     keys.onKeyFeedback = [this]() { click(); };
 
@@ -109,12 +122,60 @@ bool OS::remountSD()
 void OS::click()
 {
     if (!settings.keyClick) return;
-    M5Cardputer.Speaker.tone(4000, 8);
+    M5Cardputer.Speaker.tone(4000, 8, 0);  // channel 0: UI sounds
 }
 
 void OS::beep(float freqHz, int ms)
 {
-    M5Cardputer.Speaker.tone(freqHz, ms);
+    M5Cardputer.Speaker.tone(freqHz, ms, 0);  // channel 0: UI sounds
+}
+
+// --- notifications ------------------------------------------------------------
+
+void OS::postNotify(const char* text)
+{
+    if (!_notifyQueue) return;
+    NotifyMsg m;
+    strncpy(m.text, text, sizeof(m.text) - 1);
+    m.text[sizeof(m.text) - 1] = 0;
+    xQueueSend((QueueHandle_t)_notifyQueue, &m, 0);  // drop when full
+}
+
+void OS::drainNotifications()
+{
+    if (!_notifyQueue) return;
+    NotifyMsg m;
+    while (xQueueReceive((QueueHandle_t)_notifyQueue, &m, 0) == pdTRUE) {
+        Toast t;
+        t.text  = m.text;
+        t.until = millis() + 3000;
+        _toasts.push_back(t);
+        if (_toasts.size() > 3) _toasts.erase(_toasts.begin());
+        beep(1567.98f, 45);
+    }
+    while (!_toasts.empty() && (int32_t)(millis() - _toasts.front().until) > 0) {
+        _toasts.erase(_toasts.begin());
+    }
+}
+
+void OS::drawToasts()
+{
+    if (_toasts.empty()) return;
+    const Theme& t = _theme;
+    _canvas.setFont(&fonts::Font0);
+    _canvas.setTextSize(1);
+    _canvas.setTextDatum(textdatum_t::middle_left);
+    int y = STATUSBAR_H + 4;
+    for (auto& toast : _toasts) {
+        int w = _canvas.textWidth(toast.text) + 16;
+        if (w > SCREEN_W - 8) w = SCREEN_W - 8;
+        int x = SCREEN_W - w - 3;
+        _canvas.fillRoundRect(x, y, w, 15, 4, t.panelHi);
+        _canvas.drawRoundRect(x, y, w, 15, 4, t.accent);
+        _canvas.setTextColor(t.fg, t.panelHi);
+        _canvas.drawString(toast.text, x + 8, y + 8);
+        y += 18;
+    }
 }
 
 void OS::jingle(bool up)
@@ -249,6 +310,17 @@ void OS::drawStatusBar()
     String title = a ? a->title() : "ClaudeOS";
     _canvas.drawString(title, 4, STATUSBAR_H / 2);
 
+    // background job badge
+    int jobs = proc::runningCount();
+    if (jobs > 0) {
+        int bx = 6 + _canvas.textWidth(title);
+        String badge = String(jobs) + "job";
+        int bw = _canvas.textWidth(badge) + 8;
+        _canvas.fillRoundRect(bx, 2, bw, 10, 3, t.panelHi);
+        _canvas.setTextColor(t.accent2, t.panelHi);
+        _canvas.drawString(badge, bx + 4, STATUSBAR_H / 2);
+    }
+
     int rx = SCREEN_W - 4;
 
     // battery
@@ -337,17 +409,21 @@ void OS::tick()
     if (a) a->onTick();
     applyPendingStackOps();
     pollTimeSync();
+    drainNotifications();
 
     a = top();
     if (a) {
         _canvas.fillSprite(_theme.bg);
         a->onDraw(_canvas);
         if (!a->fullscreen()) drawStatusBar();
+        drawToasts();
         _canvas.pushSprite(0, 0);
     }
 
     // ~30 fps frame pacing
     uint32_t elapsed = millis() - frameStart;
+    _uiLoad = _uiLoad * 0.9f + (elapsed / 33.0f) * 0.1f;
+    if (_uiLoad > 1.0f) _uiLoad = 1.0f;
     if (elapsed < 33) delay(33 - elapsed);
     uint32_t frameTime = millis() - _lastFrameMs;
     if (frameTime > 0) _fps = _fps * 0.9f + (1000.0f / frameTime) * 0.1f;

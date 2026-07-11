@@ -3,12 +3,37 @@
 #include <LittleFS.h>
 #include <SD.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 #include "os.h"
 
 namespace vfs {
+
+// Global FS mutex: the SD/LittleFS drivers must not be entered concurrently
+// from the UI thread and background jobs. Recursive so vfs functions can
+// call each other (e.g. removePath -> isDir).
+static SemaphoreHandle_t s_fsMtx = nullptr;
+
+void initLocks()
+{
+    if (!s_fsMtx) s_fsMtx = xSemaphoreCreateRecursiveMutex();
+}
+
+struct FsLock {
+    FsLock()
+    {
+        if (s_fsMtx) xSemaphoreTakeRecursive(s_fsMtx, portMAX_DELAY);
+    }
+    ~FsLock()
+    {
+        if (s_fsMtx) xSemaphoreGiveRecursive(s_fsMtx);
+    }
+};
 
 fs::FS* resolve(const String& path, String& sub)
 {
@@ -47,6 +72,7 @@ String join(const String& dir, const String& name)
 
 bool list(const String& path, std::vector<Entry>& out)
 {
+    FsLock lk;
     out.clear();
     if (isRoot(path)) {
         if (OS::get().sdOk()) out.push_back({"sd", true, 0});
@@ -81,6 +107,7 @@ bool list(const String& path, std::vector<Entry>& out)
 
 bool exists(const String& path)
 {
+    FsLock lk;
     if (isRoot(path)) return true;
     String sub;
     fs::FS* fs = resolve(path, sub);
@@ -91,6 +118,7 @@ bool exists(const String& path)
 
 bool isDir(const String& path)
 {
+    FsLock lk;
     if (isRoot(path)) return true;
     String sub;
     fs::FS* fs = resolve(path, sub);
@@ -104,6 +132,7 @@ bool isDir(const String& path)
 
 size_t fileSize(const String& path)
 {
+    FsLock lk;
     String sub;
     fs::FS* fs = resolve(path, sub);
     if (!fs) return 0;
@@ -116,6 +145,7 @@ size_t fileSize(const String& path)
 
 bool readText(const String& path, String& out, size_t maxBytes)
 {
+    FsLock lk;
     out = "";
     String sub;
     fs::FS* fs = resolve(path, sub);
@@ -135,6 +165,7 @@ bool readText(const String& path, String& out, size_t maxBytes)
 
 bool writeText(const String& path, const String& data)
 {
+    FsLock lk;
     String sub;
     fs::FS* fs = resolve(path, sub);
     if (!fs) return false;
@@ -147,6 +178,7 @@ bool writeText(const String& path, const String& data)
 
 bool removePath(const String& path)
 {
+    FsLock lk;
     String sub;
     fs::FS* fs = resolve(path, sub);
     if (!fs || sub == "/") return false;
@@ -156,6 +188,7 @@ bool removePath(const String& path)
 
 bool makeDir(const String& path)
 {
+    FsLock lk;
     String sub;
     fs::FS* fs = resolve(path, sub);
     if (!fs || sub == "/") return false;
@@ -164,6 +197,7 @@ bool makeDir(const String& path)
 
 bool touch(const String& path)
 {
+    FsLock lk;
     String sub;
     fs::FS* fs = resolve(path, sub);
     if (!fs || sub == "/") return false;
@@ -172,6 +206,64 @@ bool touch(const String& path)
     if (!f) return false;
     f.close();
     return true;
+}
+
+bool copyFile(const String& src, const String& dst, const std::function<bool(int)>& progress)
+{
+    String ssub, dsub;
+    fs::FS* sfs = resolve(src, ssub);
+    fs::FS* dfs = resolve(dst, dsub);
+    if (!sfs || !dfs) return false;
+
+    File in, out;
+    size_t total = 0;
+    {
+        FsLock lk;
+        in = sfs->open(ssub, FILE_READ);
+        if (!in || in.isDirectory()) return false;
+        total = in.size();
+        out   = dfs->open(dsub, FILE_WRITE);
+        if (!out) {
+            in.close();
+            return false;
+        }
+    }
+
+    static constexpr size_t CHUNK = 4096;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[CHUNK]);
+    size_t done = 0;
+    bool ok     = true;
+
+    while (true) {
+        size_t n;
+        {
+            // lock per chunk so the UI thread can interleave its own FS work
+            FsLock lk;
+            n = in.read(buf.get(), CHUNK);
+            if (n == 0) break;
+            if (out.write(buf.get(), n) != n) {
+                ok = false;
+                break;
+            }
+        }
+        done += n;
+        if (progress) {
+            int pct = total ? (int)((uint64_t)done * 100 / total) : -1;
+            if (!progress(pct)) {
+                ok = false;
+                break;
+            }
+        }
+        vTaskDelay(1);  // yield between chunks
+    }
+
+    {
+        FsLock lk;
+        in.close();
+        out.close();
+        if (!ok) dfs->remove(dsub);  // don't leave partial files behind
+    }
+    return ok;
 }
 
 }  // namespace vfs

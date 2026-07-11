@@ -79,10 +79,14 @@ public:
     void beep(float freqHz, int ms);
     void jingle(bool up);
 
+    // --- notifications (thread-safe: callable from background jobs) -------
+    void postNotify(const char* text);
+
     // --- misc ------------------------------------------------------------
     bool timeSynced() const { return _timeSynced; }
     uint32_t uptimeMs() const { return millis() - _bootMillis; }
     float fps() const { return _fps; }
+    float uiLoad() const { return _uiLoad; }  // 0..1, busy fraction of the frame budget
     void requestWifiAutoConnect();
 
     KeyService keys;
@@ -95,6 +99,8 @@ private:
     void applyPendingStackOps();
     void mountFlash();
     void pollTimeSync();
+    void drainNotifications();
+    void drawToasts();
 
     Theme _theme = darkTheme();
     M5Canvas _canvas;
@@ -105,5 +111,12 @@ private:
     bool _sdOk = false, _flashOk = false;
     bool _timeSynced = false, _ntpStarted = false;
     uint32_t _bootMillis = 0, _lastFrameMs = 0, _lastTimePoll = 0;
-    float _fps = 0;
+    float _fps = 0, _uiLoad = 0;
+
+    struct Toast {
+        String text;
+        uint32_t until;
+    };
+    void* _notifyQueue = nullptr;  // FreeRTOS queue (jobs -> UI thread)
+    std::vector<Toast> _toasts;
 };

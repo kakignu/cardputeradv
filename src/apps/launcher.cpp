@@ -6,11 +6,14 @@
 
 namespace {
 
-constexpr int COLS   = 5;
-constexpr int CELL_W = 46;
+constexpr int COLS   = 6;
+constexpr int CELL_W = 39;
 constexpr int CELL_H = 51;
 constexpr int GRID_X = (SCREEN_W - COLS * CELL_W) / 2;
 constexpr int GRID_Y = CONTENT_Y + 2;
+
+// quick-launch keys, mapped by grid position
+constexpr char QUICK[] = "1234567890-=";
 
 class LauncherApp : public App {
 public:
@@ -38,13 +41,12 @@ public:
                 OS::get().launch(reg[_sel].create());
                 break;
             case Key::Char: {
-                // 1..9,0 quick launch
-                if (e.ch >= '1' && e.ch <= '9' && (e.ch - '1') < n) {
-                    _sel = e.ch - '1';
-                    OS::get().launch(reg[_sel].create());
-                } else if (e.ch == '0' && n >= 10) {
-                    _sel = 9;
-                    OS::get().launch(reg[_sel].create());
+                for (int i = 0; i < n && QUICK[i]; i++) {
+                    if (e.ch == QUICK[i]) {
+                        _sel = i;
+                        OS::get().launch(reg[i].create());
+                        break;
+                    }
                 }
                 break;
             }
@@ -73,14 +75,14 @@ public:
             c.setTextDatum(textdatum_t::top_center);
             c.setTextColor(selected ? t.fg : t.dim, selected ? t.panelHi : t.bg);
             c.drawString(reg[i].name, x + CELL_W / 2, y + 31);
-            // shortcut number
+            // shortcut key
             c.setTextDatum(textdatum_t::top_left);
             c.setTextColor(t.dim, selected ? t.panelHi : t.bg);
-            char num = (i < 9) ? ('1' + i) : '0';
-            c.drawString(String(num), x + 4, y + 2);
+            if (i < (int)sizeof(QUICK) - 1)
+                c.drawString(String(QUICK[i]), x + 3, y + 2);
         }
 
-        ui::hintBar(c, t, "Arrows: move   Enter: open   1-0: quick launch");
+        ui::hintBar(c, t, "Arrows: move   Enter: open   1..= quick launch");
     }
 
 private:

@@ -6,9 +6,15 @@
 #pragma once
 #include <Arduino.h>
 #include <FS.h>
+#include <functional>
 #include <vector>
 
 namespace vfs {
+
+// Create the global FS mutex. Call once from OS::begin() before any job
+// can run. Every vfs operation below then serializes on this mutex, which
+// makes the whole VFS safe to use from background jobs (proc.h).
+void initLocks();
 
 struct Entry {
     String name;
@@ -32,5 +38,11 @@ bool writeText(const String& path, const String& data);
 bool removePath(const String& path);  // file or empty dir
 bool makeDir(const String& path);
 bool touch(const String& path);
+
+// Streaming copy in 4KB chunks. The FS mutex is taken per chunk (not for
+// the whole copy), so the UI thread can interleave its own file access.
+// progress(percent) is called between chunks; return false to abort.
+bool copyFile(const String& src, const String& dst,
+              const std::function<bool(int)>& progress = nullptr);
 
 }  // namespace vfs
